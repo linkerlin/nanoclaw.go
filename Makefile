@@ -1,7 +1,10 @@
-.PHONY: build test test-unit test-integration test-e2e run clean setup
+.PHONY: all build test test-unit test-integration test-e2e run clean setup
 
 BINARY_NAME=nanoclaw
 BUILD_DIR=./build
+
+# 默认目标: 构建
+all: build
 
 build:
 	go build -ldflags "-s -w" -o $(BUILD_DIR)/$(BINARY_NAME) ./cmd/nanoclaw
