@@ -2,121 +2,87 @@ package main
 
 import (
 	"context"
-	"fmt"
-	"log"
+	"log/slog"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
-	"time"
 
-	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/linkerlin/nanoclaw.go/internal/config"
-	"github.com/linkerlin/nanoclaw.go/internal/db"
-	"github.com/linkerlin/nanoclaw.go/internal/orchestrator"
-	"github.com/linkerlin/nanoclaw.go/internal/scheduler"
-	"github.com/linkerlin/nanoclaw.go/internal/tui"
-	"github.com/linkerlin/nanoclaw.go/internal/types"
+		"github.com/linkerlin/nanoclaw.go/internal"
 )
 
 func main() {
-	// Ensure data directory exists.
-	if err := os.MkdirAll(config.DataDir, 0o755); err != nil {
-		log.Fatalf("create data dir: %v", err)
-	}
-	if err := os.MkdirAll(config.GroupsDir, 0o755); err != nil {
-		log.Fatalf("create groups dir: %v", err)
-	}
+	// 初始化日志
+	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{
+		Level: slog.LevelInfo,
+	})))
 
-	// Open database.
-	database, err := db.Open(config.DBPath())
+	// 加载配置
+	cfg := internal.LoadConfig()
+
+	// 确保目录存在
+	os.MkdirAll(cfg.App.DataDir, 0755)
+	os.MkdirAll(cfg.App.GroupsDir, 0755)
+
+	// 打开数据库
+	db, err := internal.OpenDB(cfg.DBPath())
 	if err != nil {
-		log.Fatalf("open database: %v", err)
+		slog.Error("open db", "err", err)
+		os.Exit(1)
 	}
-	defer database.Close()
+	defer db.Close()
 
-	// Seed a default "main" group if none exists.
-	if err := ensureMainGroup(database); err != nil {
-		log.Fatalf("seed main group: %v", err)
-	}
+	// 初始化默认群组
+	initDefaultGroup(db)
 
-	// Load groups for TUI.
-	groups, err := database.GetRegisteredGroups()
-	if err != nil {
-		log.Fatalf("load groups: %v", err)
-	}
+	// 初始化组件
+	queue := internal.NewGroupQueue(cfg.App.MaxConcurrent)
+	agent := internal.NewAgent(db)
+	scheduler := internal.NewScheduler(db, agent)
+	orch := internal.NewOrchestrator(db, queue, agent, cfg)
 
+	// 创建TUI
+	tui := internal.NewTUI(db, queue, agent, cfg)
+	tui.SetOnSend(func(chatJID internal.ChatJID, content string) {
+		orch.HandleMessage(chatJID, "You", content)
+	})
+
+	// 设置TUI到编排器
+	orch.SetProgram(nil)  // 简化处理
+
+	// 上下文
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	// Wire up TUI with a send callback (placeholder until program is created).
-	var orch *orchestrator.Orchestrator
-	sendFn := func(chatJID, text string) {
-		if orch != nil {
-			orch.HandleUserMessage(chatJID, "You", text)
-		}
-	}
+	// 启动调度器
+	scheduler.Start(ctx)
+	defer scheduler.Stop()
 
-	tuiModel := tui.New(groups, sendFn)
-	program := tea.NewProgram(tuiModel, tea.WithAltScreen())
-
-	// Now that we have the program, create the orchestrator.
-	orch = orchestrator.New(database, program)
-
-	// Start background services.
-	sched := scheduler.New(database)
-	sched.Start(ctx)
-	defer sched.Stop()
-
-	go orch.Poll(ctx)
-
-	// Handle OS signals for graceful shutdown.
+	// 信号处理
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
 	go func() {
 		<-sigs
+		slog.Info("shutting down...")
 		cancel()
-		program.Quit()
+		// 退出信号
 	}()
 
-	// Run TUI (blocks until quit).
-	if _, err := program.Run(); err != nil {
-		fmt.Fprintf(os.Stderr, "TUI error: %v\n", err)
+	// 运行TUI
+	slog.Info("nanoclaw started", "name", cfg.App.Name)
+	if err := tui.Run(ctx); err != nil {
+		slog.Error("tui error", "err", err)
 		os.Exit(1)
 	}
 }
 
-// ensureMainGroup registers a default "main" group if the database is empty.
-func ensureMainGroup(database *db.DB) error {
-	groups, err := database.GetRegisteredGroups()
-	if err != nil {
-		return err
-	}
-	if len(groups) > 0 {
-		return nil
-	}
-
-	mainDir := filepath.Join(config.GroupsDir, config.MainGroupFolder)
-	if err := os.MkdirAll(mainDir, 0o755); err != nil {
-		return err
-	}
-	// Write a default instruction file if absent.
-	claudeMD := filepath.Join(mainDir, "CLAUDE.md")
-	if _, err := os.Stat(claudeMD); os.IsNotExist(err) {
-		content := fmt.Sprintf("You are %s, a helpful AI assistant.\n", config.AssistantName)
-		if err := os.WriteFile(claudeMD, []byte(content), 0o644); err != nil {
-			return err
-		}
-	}
-
-	g := types.RegisteredGroup{
+func initDefaultGroup(db *internal.DB) {
+	group := &internal.Group{
 		JID:             "main@nanoclaw",
 		Name:            "Main",
-		Folder:          config.MainGroupFolder,
-		TriggerPattern:  `(?i)^@` + config.AssistantName + `\b`,
-		AddedAt:         time.Now().UTC().Format(time.RFC3339),
+		Folder:          "main",
+		TriggerPattern:  `(?i)^@Andy\b`,
 		RequiresTrigger: true,
 	}
-	return database.RegisterGroup(g)
+	// 忽略错误（可能已存在）
+	db.SaveGroup(group)
 }

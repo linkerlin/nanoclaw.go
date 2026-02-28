@@ -1,70 +1,89 @@
 # nanoclaw.go
 
-Go语言 1:1 复刻 https://github.com/qwibitai/nanoclaw/
+Go语言复刻 [NanoClaw](https://github.com/qwibitai/nanoclaw/) - 极简AI助手
 
-TUI采用 [bubbletea / bubbles](https://github.com/charmbracelet/bubbles) · Agent层采用 [ADK-GO](https://github.com/google/adk-go)
+## 特性
 
----
-
-## 架构
-
-```
-TUI (bubbletea) --> SQLite --> Message loop --> ADK-GO Agent (Gemini) --> Response
-```
-
-单 Go 进程，几个源文件，无微服务。Agent 层通过 Google ADK-GO 调用 Gemini 模型，支持每个群组独立的 `CLAUDE.md` 系统指令文件。
-
-## 项目结构
-
-| 文件 | 说明 |
-|------|------|
-| `cmd/nanoclaw/main.go` | 入口：初始化数据库、TUI、Orchestrator、Scheduler |
-| `internal/config/config.go` | 配置（`ASSISTANT_NAME`、路径、触发词正则等） |
-| `internal/db/db.go` | SQLite 数据库层（与原版 schema 一致） |
-| `internal/types/types.go` | 核心类型定义 |
-| `internal/router/router.go` | XML 消息格式化 / 出站内容清理 |
-| `internal/queue/queue.go` | 每群组 FIFO 队列 + 全局并发限制 |
-| `internal/agent/agent.go` | ADK-GO LLM Agent（Gemini 后端） |
-| `internal/scheduler/scheduler.go` | 定时任务调度（cron / interval / once） |
-| `internal/tui/tui.go` | 三栏 bubbletea TUI（群组列表 / 消息视图 / 输入框） |
-| `internal/orchestrator/orchestrator.go` | 消息循环、触发词检测、Agent 分发 |
-| `groups/*/CLAUDE.md` | 每个群组的系统指令文件 |
+- **极简架构**: ~1700行代码，11个Go文件
+- **TUI界面**: Bubbletea v2 三栏布局
+- **LLM支持**: OpenAI兼容API（OpenAI/Groq/DeepSeek/Ollama）
+- **Skills系统**: Claude SKILL格式 + Gopher-Lua脚本
+- **并发控制**: Google官方semaphore
+- **用户隔离**: 低权限用户 + Unix Socket
+- **定时任务**: Cron/Interval/Once调度
 
 ## 快速开始
 
+### 环境变量配置
+
 ```bash
-git clone https://github.com/linkerlin/nanoclaw.go
-cd nanoclaw.go
-export GOOGLE_API_KEY=your_api_key
+# OpenAI官方
+export OPENAI_API_KEY="sk-..."
+export OPENAI_BASE_URL="https://api.openai.com/v1"
+export OPENAI_MODEL="gpt-4o-mini"
+
+# 或 Groq（高速推理）
+export OPENAI_API_KEY="gsk-..."
+export OPENAI_BASE_URL="https://api.groq.com/openai/v1"
+export OPENAI_MODEL="llama-3.3-70b-versatile"
+
+# 或本地Ollama
+export OPENAI_API_KEY="ollama"
+export OPENAI_BASE_URL="http://localhost:11434/v1"
+export OPENAI_MODEL="qwen2.5:14b"
+```
+
+### 运行
+
+```bash
+go mod tidy
 go run ./cmd/nanoclaw
 ```
 
-## 环境变量
+### 构建
 
-| 变量 | 默认值 | 说明 |
-|------|--------|------|
-| `GOOGLE_API_KEY` | *(必填)* | Google AI API 密钥 |
-| `ASSISTANT_NAME` | `Andy` | 触发词（`@Andy`） |
-| `GEMINI_MODEL` | `gemini-2.0-flash` | Gemini 模型名称 |
+```bash
+make build
+./build/nanoclaw
+```
 
-## TUI 快捷键
+### 设置隔离用户（可选）
 
-| 按键 | 功能 |
-|------|------|
-| `Tab` | 切换面板（群组列表 → 消息视图 → 输入框） |
-| `Enter` | 发送消息（在输入框面板时） |
-| `Ctrl+C` | 退出 |
+```bash
+make setup
+sudo -u nanoclaw ./nanoclaw
+```
 
-## 消息流
+## 使用
 
-1. 用户在 TUI 输入框中输入消息并按 Enter
-2. 消息存入 SQLite
-3. 若消息以触发词（如 `@Andy`）开头，Orchestrator 将群组加入 Agent 队列
-4. Agent Runner 读取该群组的 `groups/{folder}/CLAUDE.md` 作为系统指令
-5. ADK-GO 创建 Gemini LLM Agent 并运行
-6. Agent 回复存入 SQLite，TUI 实时刷新显示
+在TUI中：
+- `Tab`: 切换面板
+- `Enter`: 发送消息
+- `Ctrl+C`: 退出
+
+触发词：`@Andy <message>`
+
+## 项目结构
+
+```
+nanoclaw.go/
+├── cmd/nanoclaw/main.go    # 入口
+├── internal/
+│   ├── domain.go           # 领域模型
+│   ├── config.go           # 配置（含LLM环境变量）
+│   ├── db.go               # SQLite
+│   ├── queue.go            # Semaphore队列
+│   ├── agent.go            # OpenAI Agent
+│   ├── scheduler.go        # 定时任务
+│   ├── orchestrator.go     # 消息编排
+│   ├── tui.go              # Bubbletea v2
+│   ├── skills.go           # Skills + Lua
+│   └── ipc.go              # Unix Socket
+├── skills/builtin/         # 内置Skills
+├── groups/main/            # 群组数据
+└── data/                   # SQLite数据库
+```
 
 ## 许可证
 
 MIT
-
